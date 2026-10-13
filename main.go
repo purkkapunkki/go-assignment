@@ -26,13 +26,35 @@ type Pumpkin struct {
 	Weight      decimal.Decimal `json:"weight"`
 }
 
+const pageSize int64 = 5
+
+type PumpkinPage struct {
+	Data         []Pumpkin `json:"data"`
+	CurrentPage  int64     `json:"current_page"`
+	NextPage     *int64    `json:"next_page"`
+	PreviousPage *int64    `json:"previous_page"`
+}
+
 func returnAllPumpkins(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	searchQuery := queryParams.Get("search")
-	sortBy := queryParams.Get("sort_by")
+	sortColumn := queryParams.Get("sort_by")
 	sortDirection := queryParams.Get("sort_direction")
+	page := int64(1)
+	if rawPage, exists := queryParams["page"]; exists {
+		parsedPage, err := strconv.ParseInt(rawPage[0], 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid page number", http.StatusBadRequest)
+			return
+		}
+		page = parsedPage
+		if page <= 0 {
+			http.Error(w, "Page number out of range", http.StatusNotFound)
+			return
+		}
+	}
 
-	if sortBy != "" {
+	if sortColumn != "" {
 		validSortColumns := map[string]bool{
 			"id":          true,
 			"name":        true,
@@ -40,12 +62,12 @@ func returnAllPumpkins(w http.ResponseWriter, r *http.Request) {
 			"height":      true,
 			"weight":      true,
 		}
-		if !validSortColumns[sortBy] {
+		if !validSortColumns[sortColumn] {
 			http.Error(w, "Invalid sort column", http.StatusBadRequest)
 			return
 		}
 	} else {
-		sortBy = "id"
+		sortColumn = "id"
 	}
 
 	if sortDirection != "" {
@@ -57,22 +79,42 @@ func returnAllPumpkins(w http.ResponseWriter, r *http.Request) {
 		sortDirection = "asc"
 	}
 
-	query := fmt.Sprintf(
-		"SELECT id, name, description, height, weight FROM pumpkin WHERE name LIKE ? ORDER BY %s %s",
-		sortBy,
-		sortDirection,
-	)
-	rows, err := db.Query(
-		query,
-		"%"+searchQuery+"%",
-	)
+	searchPattern := "%" + searchQuery + "%"
+	var totalCount int64
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM pumpkin WHERE name LIKE ?",
+		searchPattern,
+	).Scan(&totalCount)
 	if err != nil {
-		http.Error(w, "Error querying database"+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error counting pumpkins: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	totalPages := int64(0)
+	if totalCount > 0 {
+		totalPages = (totalCount-1)/pageSize + 1
+	}
+	if page > totalPages {
+		http.Error(w, "Page number out of range", http.StatusNotFound)
+		return
+	}
+
+	offset := (page - 1) * pageSize
+	orderBy := fmt.Sprintf("%s %s", sortColumn, sortDirection)
+	if sortColumn != "id" {
+		orderBy += ", id ASC"
+	}
+	query := fmt.Sprintf(
+		"SELECT id, name, description, height, weight FROM pumpkin WHERE name LIKE ? ORDER BY %s LIMIT ? OFFSET ?",
+		orderBy,
+	)
+	rows, err := db.Query(query, searchPattern, pageSize, offset)
+	if err != nil {
+		http.Error(w, "Error querying database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var pumpkins []Pumpkin
+	pumpkins := make([]Pumpkin, 0, pageSize)
 	for rows.Next() {
 		var pumpkin Pumpkin
 		err := rows.Scan(
@@ -93,9 +135,22 @@ func returnAllPumpkins(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	response := PumpkinPage{
+		Data:        pumpkins,
+		CurrentPage: page,
+	}
+	if page < totalPages {
+		nextPage := page + 1
+		response.NextPage = &nextPage
+	}
+	if page > 1 {
+		previousPage := page - 1
+		response.PreviousPage = &previousPage
+	}
+
 	fmt.Println("Endpoint Hit: returnAllPumpkins")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(pumpkins)
+	json.NewEncoder(w).Encode(response)
 }
 
 func returnSinglePumpkin(w http.ResponseWriter, r *http.Request) {
