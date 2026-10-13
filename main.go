@@ -27,7 +27,45 @@ type Pumpkin struct {
 }
 
 func returnAllPumpkins(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, name, description, height, weight FROM pumpkin")
+	queryParams := r.URL.Query()
+	searchQuery := queryParams.Get("search")
+	sortBy := queryParams.Get("sort_by")
+	sortDirection := queryParams.Get("sort_direction")
+
+	if sortBy != "" {
+		validSortColumns := map[string]bool{
+			"id":          true,
+			"name":        true,
+			"description": true,
+			"height":      true,
+			"weight":      true,
+		}
+		if !validSortColumns[sortBy] {
+			http.Error(w, "Invalid sort column", http.StatusBadRequest)
+			return
+		}
+	} else {
+		sortBy = "id"
+	}
+
+	if sortDirection != "" {
+		if sortDirection != "asc" && sortDirection != "desc" {
+			http.Error(w, "Invalid sort direction", http.StatusBadRequest)
+			return
+		}
+	} else {
+		sortDirection = "asc"
+	}
+
+	query := fmt.Sprintf(
+		"SELECT id, name, description, height, weight FROM pumpkin WHERE name LIKE ? ORDER BY %s %s",
+		sortBy,
+		sortDirection,
+	)
+	rows, err := db.Query(
+		query,
+		"%"+searchQuery+"%",
+	)
 	if err != nil {
 		http.Error(w, "Error querying database"+err.Error(), http.StatusInternalServerError)
 		return
